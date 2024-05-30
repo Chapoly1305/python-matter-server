@@ -43,7 +43,6 @@ from ..common.errors import (
     NodeNotReady,
     NodeNotResolving,
     UpdateCheckError,
-    UpdateError,
 )
 from ..common.helpers.api import api_command
 from ..common.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
@@ -920,11 +919,6 @@ class MatterDeviceController:
         if update is None:
             raise UpdateCheckError(
                 f"Software version {software_version} is not available for node {node_id}."
-            )
-
-        if self._ota_provider.is_busy():
-            raise UpdateError(
-                "No OTA provider currently busy, updates currently not possible"
             )
 
         # Add update to the OTA provider
