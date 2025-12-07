@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime  # noqa: TCH003
+from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any
 
@@ -20,6 +20,7 @@ class EventType(Enum):
     NODE_EVENT = "node_event"
     ATTRIBUTE_UPDATED = "attribute_updated"
     SERVER_SHUTDOWN = "server_shutdown"
+    SERVER_INFO_UPDATED = "server_info_updated"
     ENDPOINT_ADDED = "endpoint_added"
     ENDPOINT_REMOVED = "endpoint_removed"
 
@@ -47,6 +48,11 @@ class APICommand(str, Enum):
     PING_NODE = "ping_node"
     GET_NODE_IP_ADDRESSES = "get_node_ip_addresses"
     IMPORT_TEST_NODE = "import_test_node"
+    CHECK_NODE_UPDATE = "check_node_update"
+    UPDATE_NODE = "update_node"
+    SET_DEFAULT_FABRIC_LABEL = "set_default_fabric_label"
+    SET_ACL_ENTRY = "set_acl_entry"
+    SET_NODE_BINDING = "set_node_binding"
 
 
 EventCallBackType = Callable[[EventType, Any], None]
@@ -166,6 +172,7 @@ class ServerInfoMessage:
     sdk_version: str
     wifi_credentials_set: bool
     thread_credentials_set: bool
+    bluetooth_enabled: bool
 
 
 MessageType = (
@@ -208,3 +215,59 @@ class CommissioningParameters:
     setup_pin_code: int
     setup_manual_code: str
     setup_qr_code: str
+
+
+class UpdateSource(Enum):
+    """Enum with possible sources for a software update."""
+
+    MAIN_NET_DCL = "main-net-dcl"
+    TEST_NET_DCL = "test-net-dcl"
+    LOCAL = "local"
+
+
+@dataclass
+class MatterSoftwareVersion:
+    """Representation of a Matter software version. Return by the check_node_update command.
+
+    This holds Matter software version information similar to what is available from the CSA DCL.
+    https://on.dcl.csa-iot.org/#/Query/ModelVersion.
+    """
+
+    vid: int
+    pid: int
+    software_version: int
+    software_version_string: str
+    firmware_information: str | None
+    min_applicable_software_version: int
+    max_applicable_software_version: int
+    release_notes_url: str | None
+    update_source: UpdateSource
+
+    @classmethod
+    def from_dict(cls, data: dict) -> MatterSoftwareVersion:
+        """Initialize from dict."""
+        return cls(
+            vid=data["vid"],
+            pid=data["pid"],
+            software_version=data["software_version"],
+            software_version_string=data["software_version_string"],
+            firmware_information=data["firmware_information"],
+            min_applicable_software_version=data["min_applicable_software_version"],
+            max_applicable_software_version=data["max_applicable_software_version"],
+            release_notes_url=data["release_notes_url"],
+            update_source=UpdateSource(data["update_source"]),
+        )
+
+    def as_dict(self) -> dict:
+        """Return dict representation of the object."""
+        return {
+            "vid": self.vid,
+            "pid": self.pid,
+            "software_version": self.software_version,
+            "software_version_string": self.software_version_string,
+            "firmware_information": self.firmware_information,
+            "min_applicable_software_version": self.min_applicable_software_version,
+            "max_applicable_software_version": self.max_applicable_software_version,
+            "release_notes_url": self.release_notes_url,
+            "update_source": self.update_source.value,
+        }

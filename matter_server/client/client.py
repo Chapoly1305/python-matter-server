@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Final, Optional, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 import uuid
 
 from chip.clusters import Objects as Clusters
@@ -29,6 +29,7 @@ from ..common.models import (
     EventType,
     MatterNodeData,
     MatterNodeEvent,
+    MatterSoftwareVersion,
     MessageType,
     NodePingResult,
     ResultMessageBase,
@@ -79,9 +80,9 @@ class MatterClient:
     def subscribe_events(
         self,
         callback: Callable[[EventType, Any], None],
-        event_filter: Optional[EventType] = None,
-        node_filter: Optional[int] = None,
-        attr_path_filter: Optional[str] = None,
+        event_filter: EventType | None = None,
+        node_filter: int | None = None,
+        attr_path_filter: str | None = None,
     ) -> Callable[[], None]:
         """
         Subscribe to node and server events.
@@ -129,6 +130,12 @@ class MatterClient:
         if node := self._nodes.get(node_id):
             return node
         raise NodeNotExists(f"Node {node_id} does not exist or is not yet interviewed")
+
+    async def set_default_fabric_label(self, label: str | None) -> None:
+        """Set the default fabric label."""
+        await self.send_command(
+            APICommand.SET_DEFAULT_FABRIC_LABEL, require_schema=11, label=label
+        )
 
     async def commission_with_code(
         self, code: str, network_only: bool = False
@@ -181,10 +188,10 @@ class MatterClient:
     async def open_commissioning_window(
         self,
         node_id: int,
-        timeout: int = 300,
+        timeout: int = 300,  # noqa: ASYNC109 timeout parameter required for native timeout
         iteration: int = 1000,
         option: int = 1,
-        discriminator: Optional[int] = None,
+        discriminator: int | None = None,
     ) -> CommissioningParameters:
         """
         Open a commissioning window to commission a device present on this controller to another.
@@ -509,6 +516,36 @@ class MatterClient:
         """Interview a node."""
         await self.send_command(APICommand.INTERVIEW_NODE, node_id=node_id)
 
+    async def check_node_update(self, node_id: int) -> MatterSoftwareVersion | None:
+        """Check Node for updates.
+
+        Return a dict with the available update information. Most notable
+        "softwareVersion" contains the integer value of the update version which then
+        can be used for the update_node command to trigger the update.
+
+        The "softwareVersionString" is a human friendly version string.
+        """
+        data = await self.send_command(
+            APICommand.CHECK_NODE_UPDATE, node_id=node_id, require_schema=10
+        )
+        if data is None:
+            return None
+
+        return dataclass_from_dict(MatterSoftwareVersion, data)
+
+    async def update_node(
+        self,
+        node_id: int,
+        software_version: int | str,
+    ) -> None:
+        """Start node update to a particular version."""
+        await self.send_command(
+            APICommand.UPDATE_NODE,
+            node_id=node_id,
+            software_version=software_version,
+            require_schema=10,
+        )
+
     def _prepare_message(
         self,
         command: str,
@@ -575,6 +612,8 @@ class MatterClient:
         if self.connection.connected:
             # already connected
             return
+
+        self._stop_called = False
         # NOTE: connect will raise when connecting failed
         await self.connection.connect()
 
@@ -732,8 +771,8 @@ class MatterClient:
         self,
         event: EventType,
         data: Any = None,
-        node_id: Optional[int] = None,
-        attribute_path: Optional[str] = None,
+        node_id: int | None = None,
+        attribute_path: str | None = None,
     ) -> None:
         """Signal event to all subscribers."""
         # instead of iterating all subscribers we iterate over subscription keys

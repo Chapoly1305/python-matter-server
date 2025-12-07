@@ -25,7 +25,7 @@ from typing import (
     get_type_hints,
 )
 
-from chip.clusters.Types import Nullable
+from chip.clusters.Types import Nullable, NullValue
 from chip.tlv import float32, uint
 
 if TYPE_CHECKING:
@@ -91,7 +91,7 @@ def dataclass_to_dict(obj_in: DataclassInstance) -> dict:
 
 def parse_utc_timestamp(datetime_string: str) -> datetime:
     """Parse datetime from string."""
-    return datetime.fromisoformat(datetime_string.replace("Z", "+00:00"))
+    return datetime.fromisoformat(datetime_string)
 
 
 def _get_descriptor_key(descriptor: ClusterObjectDescriptor, key: str | int) -> str:
@@ -143,7 +143,7 @@ def parse_value(
             value = None
 
     if is_dataclass(value_type) and isinstance(value, dict):
-        return dataclass_from_dict(value_type, value)
+        return dataclass_from_dict(value_type, value)  # type: ignore[arg-type]
     # get origin value type and inspect one-by-one
     origin: Any = get_origin(value_type)
     if origin in (list, tuple, set) and isinstance(value, (list, tuple, set)):
@@ -168,11 +168,14 @@ def parse_value(
         }
     # handle Union type
     if origin is Union or origin is UnionType:
-        # try all possible types
         sub_value_types = get_args(value_type)
+        # return early if value is None and None or Nullable allowed
+        if value is None and Nullable in sub_value_types and allow_sdk_types:
+            return NullValue
+        if value is None and NoneType in sub_value_types:
+            return None
+        # try all possible types
         for sub_arg_type in sub_value_types:
-            if value is NoneType and sub_arg_type is NoneType:
-                return value
             # try them all until one succeeds
             try:
                 return parse_value(
@@ -264,7 +267,10 @@ def parse_value(
 
 
 def dataclass_from_dict(
-    cls: type[_T], dict_obj: dict, strict: bool = False, allow_sdk_types: bool = False
+    cls: type[_T],
+    dict_obj: dict,
+    strict: bool = False,
+    allow_sdk_types: bool = False,
 ) -> _T:
     """
     Create (instance of) a dataclass by providing a dict with values.
@@ -277,7 +283,7 @@ def dataclass_from_dict(
         extra_keys = dict_obj.keys() - {f.name for f in dc_fields}
         if extra_keys:
             raise KeyError(
-                f'Extra key(s) {",".join(extra_keys)} not allowed for {str(cls)}'
+                f"Extra key(s) {','.join(extra_keys)} not allowed for {str(cls)}"
             )
     type_hints = cached_type_hints(cls)
     return cls(

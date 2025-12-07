@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from functools import cached_property, partial
+import inspect
 import ipaddress
 import logging
 import os
@@ -31,6 +32,7 @@ from ..common.models import (
 )
 from ..server.client_handler import WebsocketClientHandler
 from .const import (
+    DEFAULT_OTA_PROVIDER_DIR,
     DEFAULT_PAA_ROOT_CERTS_DIR,
     MIN_SCHEMA_VERSION,
 )
@@ -99,7 +101,7 @@ class MatterServer:
     _runner: web.AppRunner | None = None
     _http: MultiHostTCPSite | None = None
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, pylint: disable=too-many-positional-arguments, too-many-arguments
         self,
         storage_path: str,
         vendor_id: int,
@@ -108,6 +110,10 @@ class MatterServer:
         listen_addresses: list[str] | None = None,
         primary_interface: str | None = None,
         paa_root_cert_dir: Path | None = None,
+        enable_test_net_dcl: bool = False,
+        bluetooth_adapter_id: int | None = None,
+        ota_provider_dir: Path | None = None,
+        enable_server_interactions: bool = True,
     ) -> None:
         """Initialize the Matter Server."""
         self.storage_path = storage_path
@@ -120,11 +126,17 @@ class MatterServer:
             self.paa_root_cert_dir = DEFAULT_PAA_ROOT_CERTS_DIR
         else:
             self.paa_root_cert_dir = Path(paa_root_cert_dir).absolute()
+        self.enable_test_net_dcl = enable_test_net_dcl
+        self.bluetooth_enabled = bluetooth_adapter_id is not None
+        if ota_provider_dir is None:
+            self.ota_provider_dir = DEFAULT_OTA_PROVIDER_DIR
+        else:
+            self.ota_provider_dir = Path(ota_provider_dir).absolute()
         self.logger = logging.getLogger(__name__)
         self.app = web.Application()
         self.loop: asyncio.AbstractEventLoop | None = None
         # Instantiate the Matter Stack using the SDK using the given storage path
-        self.stack = MatterStack(self)
+        self.stack = MatterStack(self, bluetooth_adapter_id, enable_server_interactions)
         self.storage = StorageController(self)
         self.vendor_info = VendorInfo(self)
         # we dynamically register command handlers
@@ -135,6 +147,11 @@ class MatterServer:
             raise RuntimeError(
                 "Minimum supported schema version can't be higher than current schema version."
             )
+        self.logger.info("Matter Server initialized")
+        self.logger.info(
+            "Using '%s' as primary interface (for link-local addresses)",
+            self.primary_interface,
+        )
 
     @cached_property
     def device_controller(self) -> MatterDeviceController:
@@ -156,17 +173,23 @@ class MatterServer:
 
         # (re)fetch all PAA certificates once at startup
         # NOTE: this must be done before initializing the controller
-        await fetch_certificates(self.paa_root_cert_dir)
+        await fetch_certificates(
+            self.paa_root_cert_dir,
+            fetch_test_certificates=self.enable_test_net_dcl,
+            fetch_production_certificates=True,
+        )
 
         # Initialize our (intermediate) device controller which keeps track
         # of Matter devices and their subscriptions.
-        self._device_controller = MatterDeviceController(self, self.paa_root_cert_dir)
+        self._device_controller = MatterDeviceController(
+            self, self.paa_root_cert_dir, self.ota_provider_dir
+        )
         self._register_api_commands()
 
         await self._device_controller.initialize()
         await self.storage.start()
-        await self._device_controller.start()
         await self.vendor_info.start()
+        await self._device_controller.start()
         mount_websocket(self, "/ws")
         self.app.router.add_route("GET", "/info", self._handle_info)
 
@@ -191,7 +214,7 @@ class MatterServer:
             self._runner, host=self.listen_addresses, port=self.port
         )
         await self._http.start()
-        self.logger.debug("Webserver initialized.")
+        self.logger.info("Matter Server successfully initialized.")
 
     async def stop(self) -> None:
         """Stop running the server."""
@@ -237,6 +260,7 @@ class MatterServer:
             sdk_version=chip_clusters_version(),
             wifi_credentials_set=self._device_controller.wifi_credentials_set,
             thread_credentials_set=self._device_controller.thread_credentials_set,
+            bluetooth_enabled=self.bluetooth_enabled,
         )
 
     @api_command(APICommand.SERVER_DIAGNOSTICS)
@@ -297,18 +321,24 @@ class MatterServer:
 
     def _register_api_commands(self) -> None:
         """Register all methods decorated as api_command."""
-        for cls in (self, self._device_controller, self.vendor_info):
-            for attr_name in dir(cls):
+        for obj in (self, self._device_controller, self.vendor_info):
+            cls = obj.__class__
+            for attr_name, attr in inspect.getmembers(cls):
                 if attr_name.startswith("_"):
                     continue
-                val = getattr(cls, attr_name)
-                if not hasattr(val, "api_cmd"):
+
+                if isinstance(attr, property):
+                    continue  # skip properties
+
+                # attr is the (unbound) function, we can check for the decorator
+                if not hasattr(attr, "api_cmd"):
                     continue
-                if hasattr(val, "mock_calls"):
-                    # filter out mocks
+                if hasattr(attr, "mock_calls"):
                     continue
-                # method is decorated with our api decorator
-                self.register_api_command(val.api_cmd, val)
+
+                # Get the instance method before registering
+                bound_method = getattr(obj, attr_name)
+                self.register_api_command(attr.api_cmd, bound_method)
 
     async def _handle_info(self, request: web.Request) -> web.Response:
         """Handle info endpoint to serve basic server (version) info."""

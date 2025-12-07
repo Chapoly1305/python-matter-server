@@ -19,14 +19,14 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.utils import CryptographyDeprecationWarning
 
+from matter_server.server.helpers import DCL_PRODUCTION_URL, DCL_TEST_URL
+
 # Git repo details
 OWNER = "project-chip"
 REPO = "connectedhomeip"
 PATH = "credentials/development/paa-root-certs"
 
 LOGGER = logging.getLogger(__name__)
-PRODUCTION_URL = "https://on.dcl.csa-iot.org"
-TEST_URL = "https://on.test-net.dcl.csa-iot.org"
 GIT_URL = f"https://raw.githubusercontent.com/{OWNER}/{REPO}/master/{PATH}"
 
 
@@ -149,7 +149,9 @@ async def fetch_dcl_certificates(
 # are correctly captured
 
 
-async def fetch_git_certificates(paa_root_cert_dir: Path) -> int:
+async def fetch_git_certificates(
+    paa_root_cert_dir: Path, prefix: str | None = None
+) -> int:
     """Fetch Git PAA Certificates."""
     fetch_count = 0
     LOGGER.info("Fetching the latest PAA root certificates from Git.")
@@ -158,11 +160,13 @@ async def fetch_git_certificates(paa_root_cert_dir: Path) -> int:
         async with ClientSession(raise_for_status=True) as http_session:
             # Fetch directory contents and filter out extension
             api_url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{PATH}"
-            async with http_session.get(api_url, timeout=20) as response:
+            async with http_session.get(api_url) as response:
                 contents = await response.json()
                 git_certs = {item["name"].split(".")[0] for item in contents}
             # Fetch certificates
             for cert in git_certs:
+                if prefix and not cert.startswith(prefix):
+                    continue
                 async with http_session.get(f"{GIT_URL}/{cert}.pem") as response:
                     certificate = await response.text()
                 if await write_paa_root_cert(
@@ -222,7 +226,7 @@ async def fetch_certificates(
         fetch_count = await fetch_dcl_certificates(
             paa_root_cert_dir=paa_root_cert_dir,
             base_name="dcld_production_",
-            base_url=PRODUCTION_URL,
+            base_url=DCL_PRODUCTION_URL,
         )
         LOGGER.info("Fetched %s PAA root certificates from DCL.", fetch_count)
         total_fetch_count += fetch_count
@@ -231,13 +235,18 @@ async def fetch_certificates(
         fetch_count = await fetch_dcl_certificates(
             paa_root_cert_dir=paa_root_cert_dir,
             base_name="dcld_test_",
-            base_url=TEST_URL,
+            base_url=DCL_TEST_URL,
         )
         LOGGER.info("Fetched %s PAA root certificates from Test DCL.", fetch_count)
         total_fetch_count += fetch_count
 
     if fetch_test_certificates:
         total_fetch_count += await fetch_git_certificates(paa_root_cert_dir)
+    else:
+        # Treat the Chip-Test certificates as production, we use them in our examples
+        total_fetch_count += await fetch_git_certificates(
+            paa_root_cert_dir, "Chip-Test"
+        )
 
     await loop.run_in_executor(None, paa_root_cert_dir_version.write_text, "1")
 

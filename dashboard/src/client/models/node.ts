@@ -21,7 +21,7 @@ export class MatterNode {
 
   get nodeLabel(): string {
     const label = this.attributes["0/40/5"];
-    if (!label) return '';
+    if (typeof label !== "string") return '';
     if (label.includes("\u0000\u0000")) return '';
     return label.trim();
   }
@@ -36,6 +36,14 @@ export class MatterNode {
 
   get serialNumber(): string {
     return this.attributes["0/40/15"];
+  }
+
+  get updateState(): number | undefined {
+    return this.attributes["0/42/2"];
+  }
+
+  get updateStateProgress(): number | undefined {
+    return this.attributes["0/42/3"];
   }
 
   update(data: Record<string, any>): MatterNode {
